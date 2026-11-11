@@ -11,7 +11,7 @@ import json
 import os
 from os.path import join
 
-from RCAEval.agent.toolkit import TOOLS, CaseToolkit
+from RCAEval.agent.toolkit import TOOLKIT_VERSION, TOOLS, CaseToolkit
 
 INSTRUCTIONS = (
     "Tools for diagnosing one failure case of the RCAEval benchmark. Start with describe_case, "
@@ -19,7 +19,7 @@ INSTRUCTIONS = (
 )
 
 
-def serve(case_dir, record_dir):
+def serve(case_dir, record_dir, toolkit_version=TOOLKIT_VERSION):
     try:
         import anyio
         import mcp.types as types
@@ -29,7 +29,7 @@ def serve(case_dir, record_dir):
         raise SystemExit("the MCP server needs the mcp package: pip install RCAEval[agent]")
 
     os.makedirs(record_dir, exist_ok=True)
-    toolkit = CaseToolkit(case_dir)
+    toolkit = CaseToolkit(case_dir, version=toolkit_version)
     tools = [types.Tool(name=t["name"], description=t["description"], input_schema=t["parameters"]) for t in TOOLS]
 
     async def on_list_tools(ctx, params):

@@ -12,6 +12,7 @@ import sys
 from RCAEval.agent.export import EXPORTABLE, export
 from RCAEval.agent.prompt import PROMPT_VERSION, SYSTEM_PROMPTS
 from RCAEval.agent.predictions import PredictionsError, run
+from RCAEval.agent.toolkit import TOOLKIT_VERSION, TOOLKIT_VERSIONS
 
 
 def main(argv=None):
@@ -45,6 +46,8 @@ def main(argv=None):
     p.add_argument("--temperature", type=float, default=0.0)
     p.add_argument("--prompt-version", default=PROMPT_VERSION, choices=sorted(SYSTEM_PROMPTS),
                    help=f"task prompt version (default {PROMPT_VERSION})")
+    p.add_argument("--toolkit-version", default=TOOLKIT_VERSION, choices=TOOLKIT_VERSIONS,
+                   help=f"tool behaviour version (default {TOOLKIT_VERSION})")
     p.add_argument("--workers", type=int, default=1, help="cases run in parallel (default 1)")
     p.add_argument("--trajectories", default=None, help="trajectory directory (default: <out>.trajectories)")
 
@@ -59,12 +62,16 @@ def main(argv=None):
     p.add_argument("--timeout", type=int, default=900, help="seconds per case (default 900)")
     p.add_argument("--prompt-version", default=PROMPT_VERSION, choices=sorted(SYSTEM_PROMPTS),
                    help=f"task prompt version (default {PROMPT_VERSION})")
+    p.add_argument("--toolkit-version", default=TOOLKIT_VERSION, choices=TOOLKIT_VERSIONS,
+                   help=f"tool behaviour version (default {TOOLKIT_VERSION})")
     p.add_argument("--workers", type=int, default=1, help="cases run in parallel (default 1)")
     p.add_argument("--trajectories", default=None, help="trajectory directory (default: <out>.trajectories)")
 
     p = sub.add_parser("mcp", help="serve one case's tools over MCP (stdio)")
     p.add_argument("--case", required=True, help="a case directory of a task view")
     p.add_argument("--record", required=True, help="directory for calls.jsonl and submission.json")
+    p.add_argument("--toolkit-version", default=TOOLKIT_VERSION, choices=TOOLKIT_VERSIONS,
+                   help=f"tool behaviour version (default {TOOLKIT_VERSION})")
 
     args = parser.parse_args(argv)
 
@@ -73,19 +80,20 @@ def main(argv=None):
 
         run_tasks(args.tasks, args.model, args.out, cases=args.cases, trajectories=args.trajectories,
                   workers=args.workers, max_steps=args.max_steps, max_cost_usd=args.max_cost_usd,
-                  temperature=args.temperature, prompt_version=args.prompt_version)
+                  temperature=args.temperature, prompt_version=args.prompt_version,
+                  toolkit_version=args.toolkit_version)
         return 0
     if args.subcommand == "run-cli":
         from RCAEval.agent.runner import run_tasks
 
         run_tasks(args.tasks, args.out, agent=args.agent, command=args.command, model=args.model,
                   timeout=args.timeout, cases=args.cases, trajectories=args.trajectories, workers=args.workers,
-                  prompt_version=args.prompt_version)
+                  prompt_version=args.prompt_version, toolkit_version=args.toolkit_version)
         return 0
     if args.subcommand == "mcp":
         from RCAEval.agent.mcp_server import serve
 
-        serve(args.case, args.record)
+        serve(args.case, args.record, toolkit_version=args.toolkit_version)
         return 0
 
     if args.subcommand == "export":

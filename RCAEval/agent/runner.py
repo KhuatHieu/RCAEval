@@ -19,6 +19,7 @@ from os.path import abspath, exists, join
 
 from RCAEval.agent.batch import run_batch
 from RCAEval.agent.prompt import PROMPT_VERSION, full_prompt
+from RCAEval.agent.toolkit import TOOLKIT_VERSION
 
 # --bare skips CLAUDE.md, auto-memory and hooks and authenticates with
 # ANTHROPIC_API_KEY; --tools "" removes every built-in tool (shell, file
@@ -59,7 +60,7 @@ def claude_usage(stdout):
 
 
 def run_case(case_dir, record_dir, agent="claude-code", command=None, model=None, timeout=900,
-             prompt_version=PROMPT_VERSION):
+             prompt_version=PROMPT_VERSION, toolkit_version=TOOLKIT_VERSION):
     """Run the agent CLI on one case; returns (prediction, trajectory records)."""
     with open(join(case_dir, "task.json")) as f:
         task = json.load(f)
@@ -71,7 +72,8 @@ def run_case(case_dir, record_dir, agent="claude-code", command=None, model=None
     with open(mcp_config, "w") as f:
         json.dump({"mcpServers": {"rcaeval": {
             "command": sys.executable,
-            "args": ["-m", "RCAEval.agent", "mcp", "--case", abspath(case_dir), "--record", abspath(record_dir)],
+            "args": ["-m", "RCAEval.agent", "mcp", "--case", abspath(case_dir), "--record", abspath(record_dir),
+                     "--toolkit-version", toolkit_version],
         }}}, f)
 
     cmd = build_command(agent, command, full_prompt(task, prompt_version), mcp_config, workdir, model)
@@ -113,22 +115,24 @@ def run_case(case_dir, record_dir, agent="claude-code", command=None, model=None
         "reasoning": submission.get("reasoning"),
         "model": agent + (f":{model}" if model else ""),
         "prompt_version": prompt_version,
+        "toolkit_version": toolkit_version,
         "stop_reason": stop_reason,
         "usage": usage,
     }
     records = ([{"type": "meta", "case_id": task["case_id"], "model": prediction["model"],
-                 "prompt_version": prompt_version}] + calls + [{"type": "result", **prediction}])
+                 "prompt_version": prompt_version, "toolkit_version": toolkit_version}] + calls + [{"type": "result", **prediction}])
     return prediction, records
 
 
 def run_tasks(tasks_dir, out, agent="claude-code", command=None, model=None, timeout=900,
-              cases=None, trajectories=None, workers=1, prompt_version=PROMPT_VERSION):
+              cases=None, trajectories=None, workers=1, prompt_version=PROMPT_VERSION,
+              toolkit_version=TOOLKIT_VERSION):
     if agent == "claude-code" and shutil.which("claude") is None:
         raise SystemExit("the claude-code preset needs the `claude` CLI on PATH")
     runs = out + ".runs"
 
     def solve(case_id, case_dir):
         return run_case(case_dir, join(runs, case_id), agent=agent, command=command, model=model, timeout=timeout,
-                        prompt_version=prompt_version)
+                        prompt_version=prompt_version, toolkit_version=toolkit_version)
 
     return run_batch(tasks_dir, out, solve, cases=cases, trajectories=trajectories, workers=workers)

@@ -7,14 +7,16 @@ limit, after which one last turn requires submit. Predictions are appended as
 cases finish and a rerun skips cases already in the output, so an interrupted
 run never pays twice.
 """
+import functools
 import json
 import time
 
 from RCAEval.agent.batch import run_batch
 from RCAEval.agent.prompt import PROMPT_VERSION, case_prompt, system_prompt
-from RCAEval.agent.toolkit import TOOLS, CaseToolkit
+from RCAEval.agent.toolkit import TOOLKIT_VERSION, TOOLS, CaseToolkit
 
 TOOL_SPECS = [{"type": "function", "function": t} for t in TOOLS]
+COMPLETION_RETRIES = 4
 
 
 def litellm_completion():
@@ -23,7 +25,8 @@ def litellm_completion():
     except ImportError:
         raise SystemExit("the reference agent needs LiteLLM: pip install RCAEval[agent]")
     litellm.drop_params = True  # e.g. temperature on models that reject it
-    return litellm.completion
+    # retry transient provider errors (5xx, connection resets), which would otherwise stop the whole batch
+    return functools.partial(litellm.completion, num_retries=COMPLETION_RETRIES)
 
 
 def litellm_cost(response):
@@ -52,15 +55,16 @@ def with_cache_marks(messages):
 
 
 def run_case(case_dir, model, max_steps=30, max_cost_usd=None, temperature=0.0,
-             completion=None, cost=None, prompt_version=PROMPT_VERSION):
+             completion=None, cost=None, prompt_version=PROMPT_VERSION,
+             toolkit_version=TOOLKIT_VERSION):
     """Investigate one case; returns (prediction dict, trajectory records)."""
     completion = completion or litellm_completion()
     cost = cost or litellm_cost
-    toolkit = CaseToolkit(case_dir)
+    toolkit = CaseToolkit(case_dir, version=toolkit_version)
     messages = [{"role": "system", "content": system_prompt(prompt_version)},
                 {"role": "user", "content": case_prompt(toolkit.task)}]
     records = [{"type": "meta", "case_id": toolkit.task["case_id"], "model": model,
-                "prompt_version": prompt_version}]
+                "prompt_version": prompt_version, "toolkit_version": toolkit_version}]
     usage = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "steps": 0}
     unpriced = False
     stop_reason = None
@@ -134,6 +138,7 @@ def run_case(case_dir, model, max_steps=30, max_cost_usd=None, temperature=0.0,
         "reasoning": submission["reasoning"],
         "model": model,
         "prompt_version": prompt_version,
+        "toolkit_version": toolkit_version,
         "stop_reason": stop_reason,
         "usage": usage,
     }

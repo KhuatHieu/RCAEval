@@ -1,15 +1,18 @@
 """Tests for the agent toolkit (RCAEval.agent.toolkit)."""
 import inspect
 import json
+import os
 import subprocess
 import sys
 from os.path import join
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from agent_synthetic import INJECT, START, exported_case
 from RCAEval.agent.export import export
-from RCAEval.agent.toolkit import TOOLS, CaseToolkit, cap, mask_message
+from RCAEval.agent.toolkit import TOOLKIT_VERSION, TOOLS, CaseToolkit, cap, mask_message, robust_score
 
 
 @pytest.fixture
@@ -128,7 +131,7 @@ def test_mask_message():
 
 
 def test_metric_ranking_matches_the_baro_reference_agent(tmp_path):
-    """rank_anomalies(metrics) is BARO on the same rows as docs/examples/baro_agent.py."""
+    """Toolkit version 1: rank_anomalies(metrics) is BARO on the same rows as docs/examples/baro_agent.py."""
     task_dir, _ = export("re1-ob", out_dir=str(tmp_path / "out"))
     case_ids = json.load(open(join(task_dir, "manifest.json")))["case_ids"][:3]
     preds = tmp_path / "preds.jsonl"
@@ -136,5 +139,37 @@ def test_metric_ranking_matches_the_baro_reference_agent(tmp_path):
                     "--cases", *case_ids], check=True)
     for line in open(preds):
         p = json.loads(line)
-        ranked = CaseToolkit(join(task_dir, "cases", p["case_id"])).call("rank_anomalies", {"top_k": 100})["ranked"]
+        ranked = CaseToolkit(join(task_dir, "cases", p["case_id"]), version="1").call("rank_anomalies", {"top_k": 100})["ranked"]
         assert [r["name"] for r in ranked] == p["ranks"]
+
+
+def test_robust_score_does_not_score_in_raw_units():
+    normal, step = [0.0] * 50, [9e9] * 50
+    assert robust_score(normal, step, normal + step) == pytest.approx(100)  # flat baseline: 1% of the range
+    bursty = [0.0] * 45 + [1e9] * 5  # IQR 0, so BARO would score 9e9 here
+    assert robust_score(bursty, [2e9] * 50, bursty + [2e9] * 50) == pytest.approx(2e9 / float(np.std(bursty)))
+    assert robust_score([1, 2, 3, 4, 5], [9], [1, 2, 3, 4, 5, 9]) == pytest.approx((9 - 3) / 2)  # BARO's z-score
+    assert robust_score([4] * 5, [4] * 5, [4] * 10) == 0.0
+
+
+def _with_flat_before_metric(case_dir):
+    """Add cartservice_diskio: 0 before the inject time, gigabytes after it."""
+    files = json.load(open(join(case_dir, "task.json")))["files"]
+    path = join(case_dir, files["metrics"])
+    data = pd.read_csv(path)
+    data["cartservice_diskio"] = np.where(data["time"] >= INJECT, 5e9, 0.0)
+    os.remove(path)  # the export hardlinks telemetry; do not touch the source
+    data.to_csv(path, index=False)
+
+
+def test_version_2_keeps_series_flat_before_the_inject_time(tmp_path):
+    case_dir, _ = exported_case(tmp_path)
+    _with_flat_before_metric(case_dir)
+    v1 = [r["name"] for r in CaseToolkit(case_dir, version="1").call("rank_anomalies", {"top_k": 100})["ranked"]]
+    assert "cartservice_diskio" not in v1  # BARO drops it: constant in the normal half
+    ranked = CaseToolkit(case_dir).call("rank_anomalies", {"top_k": 100})["ranked"]
+    assert TOOLKIT_VERSION == "2"
+    assert {r["name"] for r in ranked[:2]} == {"cartservice_diskio", "cartservice_cpu"}
+    assert all(r["score"] < 1e3 for r in ranked)  # no raw-unit scores
+    with pytest.raises(ValueError):
+        CaseToolkit(case_dir, version="9")

@@ -23,6 +23,14 @@ from RCAEval.benchmark.scoring import to_service
 
 MAX_CHARS = 8000
 
+# Version of the tools' behaviour, recorded with every prediction next to the prompt
+# version; every version stays available for comparison. FINDINGS.md has the details.
+#   "1": rank_anomalies(metrics) is BARO exactly as RCAEval.e2e.baro runs it.
+#   "2": rank_anomalies(metrics) keeps series that were flat before the inject time and
+#        never scores in raw units (see robust_score); the other modalities are as in "1".
+TOOLKIT_VERSION = "2"
+TOOLKIT_VERSIONS = ("1", "2")
+
 TOOLS = [
     {
         "name": "describe_case",
@@ -147,6 +155,31 @@ def cap(result, limit=MAX_CHARS):
     return result
 
 
+def robust_score(normal, anomal, window, flat_fraction=0.01):
+    """How far anomal rises above normal, in robust units (toolkit version 2).
+
+    BARO's score, max((anomal - median(normal)) / IQR(normal)), with two fixes for an
+    IQR of zero, where RobustScaler uses a scale of 1 and so scores in raw units (a
+    disk-I/O series in bytes then outranks everything): the scale falls back to the
+    standard deviation of normal, and for a series flat before the inject time to
+    flat_fraction of its range over the window, so a step away from a flat baseline
+    scores about 1 / flat_fraction (100) whatever its units.
+    """
+    normal, anomal, window = (np.asarray(x, dtype=float) for x in (normal, anomal, window))
+    # a scale this small is rounding error (the IQR of a constant comes out as ~1e-18)
+    tiny = 1e-9 * max(float(np.max(np.abs(window))), np.finfo(float).tiny)
+    median = np.median(normal)
+    q1, q3 = np.percentile(normal, [25, 75])
+    scale = q3 - q1
+    if scale <= tiny:
+        scale = np.std(normal)
+    if scale <= tiny:
+        scale = flat_fraction * (np.max(window) - np.min(window))
+    if scale <= tiny:
+        return 0.0
+    return float((np.max(anomal) - median) / scale)
+
+
 def clamp(value, default, lo, hi):
     if value is None:
         return default
@@ -160,7 +193,10 @@ class ToolError(Exception):
 class CaseToolkit:
     """The tools over one exported case directory."""
 
-    def __init__(self, case_dir):
+    def __init__(self, case_dir, version=TOOLKIT_VERSION):
+        if version not in TOOLKIT_VERSIONS:
+            raise ValueError(f"unknown toolkit version {version!r}; choose one of {', '.join(TOOLKIT_VERSIONS)}")
+        self.version = version
         self.case_dir = case_dir
         with open(join(case_dir, "task.json")) as f:
             self.task = json.load(f)
@@ -350,11 +386,24 @@ class CaseToolkit:
 
     def rank_anomalies(self, modality="metrics", top_k=None):
         top_k = clamp(top_k, 20, 1, 100)
-        if modality == "metrics":
+        if modality == "metrics" and self.version == "1":
             from RCAEval.e2e.baro import baro
 
+            # BARO preprocesses the two halves apart, so a series constant before the
+            # inject time is dropped however much it moves after it
             scores = baro(self.standard_metrics(), self.inject_time, dataset=self.task["dataset"])["scores"]
             ranked = [{"name": n, "score": round(s, 3)} for n, s in scores.items()]
+        elif modality == "metrics":
+            from RCAEval.io.time_series import preprocess
+
+            data = self.standard_metrics()
+            after = (data["time"] >= self.inject_time).to_numpy()
+            values = preprocess(data, dataset=self.task["dataset"])  # constant over the whole window: dropped
+            ranked = []
+            for col in values.columns:
+                v = values[col].to_numpy()
+                ranked.append({"name": col, "score": round(robust_score(v[~after], v[after], v), 3)})
+            ranked.sort(key=lambda r: r["score"], reverse=True)
         elif modality in ("logs", "trace_latency", "trace_errors"):
             source = {"logs": "logts", "trace_latency": "tracets_lat", "trace_errors": "tracets_err"}[modality]
             self._require(source, f"{modality.replace('_', ' ')} time series")

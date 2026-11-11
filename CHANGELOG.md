@@ -5,6 +5,23 @@ All notable changes to RCAEval are listed here, newest first. Versions follow th
 release notes live, and the [PyPI releases](https://pypi.org/project/RCAEval/#history).
 A few early versions exist on only one of the two.
 
+## [Unreleased]
+
+The agent toolkit is versioned, and version 2 fixes `rank_anomalies(metrics)`. This changes
+the reference agent's results; `--toolkit-version 1` reproduces the old ones.
+
+### Fixed
+- `rank_anomalies(metrics)` no longer drops series that were constant before the inject
+  time. It ran BARO, which preprocesses the normal and anomalous halves apart, so on RE2-OB
+  the root cause's `diskio` and `socket` metrics never appeared in any disk or socket fault.
+  Series with a zero interquartile range before the inject time are no longer scored in raw
+  units either (a bursty `redis_diskio`, in bytes, led the ranking in 78 of 90 RE2-OB cases).
+  The BARO baseline (`RCAEval.e2e.baro`) is unchanged. See `FINDINGS.md`.
+
+### Added
+- `TOOLKIT_VERSION` in `RCAEval.agent.toolkit`, `--toolkit-version` on `rcaeval-agent run`,
+  `run-cli` and `mcp`, and `toolkit_version` in every prediction and trajectory.
+
 ## [1.12.0] - 2026-11-06
 
 Convert telemetry from your own system into an RCAEval case with `rcaeval-convert`.
