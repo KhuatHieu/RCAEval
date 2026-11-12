@@ -28,8 +28,11 @@ MAX_CHARS = 8000
 #   "1": rank_anomalies(metrics) is BARO exactly as RCAEval.e2e.baro runs it.
 #   "2": rank_anomalies(metrics) keeps series that were flat before the inject time and
 #        never scores in raw units (see robust_score); the other modalities are as in "1".
+#   "3": (experimental) rank_anomalies(metrics) scores as "2" and ranks in tiers: a sustained
+#        step up from a quiet baseline first (labelled "step"), then series whose normal period
+#        has spread by z-score, then quiet series without a step. Same as baro's scorer "3".
 TOOLKIT_VERSION = "2"
-TOOLKIT_VERSIONS = ("1", "2")
+TOOLKIT_VERSIONS = ("1", "2", "3")
 
 TOOLS = [
     {
@@ -184,6 +187,37 @@ def clamp(value, default, lo, hi):
     if value is None:
         return default
     return max(lo, min(hi, int(value)))
+
+
+def is_quiet(normal):
+    """True when normal has (almost) no interquartile spread, so a z-score against it is not
+    meaningful (toolkit version 3)."""
+    normal = np.asarray(normal, dtype=float)
+    q1, q3 = np.percentile(normal, [25, 75])
+    return q3 - q1 <= 1e-9 * max(float(np.max(np.abs(normal))), np.finfo(float).tiny)
+
+
+def sustained_step(normal, anomal, min_persistence=0.9, min_rise=1.0):
+    """A step up from a quiet baseline that holds after the inject time (toolkit version 3).
+
+    The baseline is normal's median when normal is quiet. Returns {"from", "to", "persistence",
+    "rise"} when the series differs from it in at least min_persistence of the anomalous samples
+    and its anomalous median is at least min_rise above it (relative, so 1.0 = at least doubled;
+    any rise from zero counts, as rise = inf); otherwise None.
+    """
+    normal, anomal = np.asarray(normal, dtype=float), np.asarray(anomal, dtype=float)
+    if not len(normal) or not len(anomal) or not is_quiet(normal):
+        return None
+    base = float(np.median(normal))
+    tol = 1e-9 * max(abs(base), float(np.max(np.abs(anomal))), np.finfo(float).tiny)
+    persistence = float(np.mean(np.abs(anomal - base) > tol))
+    median = float(np.median(anomal))
+    if median - base <= tol:
+        return None
+    rise = float("inf") if abs(base) <= tol else (median - base) / abs(base)
+    if persistence < min_persistence or rise < min_rise:
+        return None
+    return {"from": base, "to": median, "persistence": persistence, "rise": rise}
 
 
 class ToolError(Exception):
@@ -399,11 +433,23 @@ class CaseToolkit:
             data = self.standard_metrics()
             after = (data["time"] >= self.inject_time).to_numpy()
             values = preprocess(data, dataset=self.task["dataset"])  # constant over the whole window: dropped
-            ranked = []
+            ranked, keys = [], {}
             for col in values.columns:
                 v = values[col].to_numpy()
-                ranked.append({"name": col, "score": round(robust_score(v[~after], v[after], v), 3)})
-            ranked.sort(key=lambda r: r["score"], reverse=True)
+                score = robust_score(v[~after], v[after], v)
+                entry = {"name": col, "score": round(score, 3)}
+                if self.version == "3":
+                    step = sustained_step(v[~after], v[after])
+                    if step:
+                        entry["step"] = (f"from {step['from']:.4g} to {step['to']:.4g}, "
+                                         f"held in {step['persistence']:.0%} of samples after the inject time")
+                        keys[col] = (2, step["rise"], score)
+                    else:
+                        keys[col] = (0 if is_quiet(v[~after]) else 1, 0, score)
+                else:
+                    keys[col] = (1, 0, round(score, 3))
+                ranked.append(entry)
+            ranked.sort(key=lambda r: keys[r["name"]], reverse=True)
         elif modality in ("logs", "trace_latency", "trace_errors"):
             source = {"logs": "logts", "trace_latency": "tracets_lat", "trace_errors": "tracets_err"}[modality]
             self._require(source, f"{modality.replace('_', ' ')} time series")

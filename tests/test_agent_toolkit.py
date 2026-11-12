@@ -173,3 +173,16 @@ def test_version_2_keeps_series_flat_before_the_inject_time(tmp_path):
     assert all(r["score"] < 1e3 for r in ranked)  # no raw-unit scores
     with pytest.raises(ValueError):
         CaseToolkit(case_dir, version="9")
+
+
+def test_version_3_ranks_a_sustained_step_first(tmp_path):
+    case_dir, _ = exported_case(tmp_path)
+    _with_flat_before_metric(case_dir)
+    ranked = CaseToolkit(case_dir, version="3").call("rank_anomalies", {"top_k": 100})["ranked"]
+    assert ranked[0]["name"] == "cartservice_diskio"
+    assert ranked[0]["step"].startswith("from 0 to 5e+09")
+    assert all("step" not in r for r in ranked[1:])
+    # logs and traces are ranked as in versions 1 and 2
+    for modality in ("logs", "trace_latency", "trace_errors"):
+        assert (CaseToolkit(case_dir, version="3").call("rank_anomalies", {"modality": modality})
+                == CaseToolkit(case_dir, version="2").call("rank_anomalies", {"modality": modality}))

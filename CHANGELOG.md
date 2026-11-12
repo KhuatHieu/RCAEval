@@ -7,6 +7,13 @@ A few early versions exist on only one of the two.
 
 ## [Unreleased]
 
+### Added (experimental)
+- Toolkit version 3 (`--toolkit-version 3`): `rank_anomalies(metrics)` ranks a sustained step
+  up from a quiet baseline first (with a `step` label), then series by z-score, then quiet
+  series without a step. The default stays version 2. It helps on RE2-OB but hurts on RE2-TT,
+  where a workload artifact (a latency series stuck before the inject time) takes the first tier.
+  See `FINDINGS.md` in the baro fork (F2).
+
 The agent toolkit is versioned, and version 2 fixes `rank_anomalies(metrics)`. This changes
 the reference agent's results; `--toolkit-version 1` reproduces the old ones.
 
